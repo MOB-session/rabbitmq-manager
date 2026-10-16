@@ -1,0 +1,25 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    container_name: rabbitmq-server
+    hostname: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"     # AMQP 0-9-1 & 1.0 protocol
+      - "15672:15672"   # Management HTTP API & Web Dashboard
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_DEFAULT_VHOST=/
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rabbitmq_data:
