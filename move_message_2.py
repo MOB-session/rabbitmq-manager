@@ -13,9 +13,8 @@ VHOST = os.getenv("VHOST", "/fish")
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "localhost")
 RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 
-# 0 = unlimited. When TARGET_MESSAGE_ID is set, MAX_MESSAGES can limit how many messages to inspect.
+# 0 = unlimited. When targeting IDs, MAX_MESSAGES can limit how many messages to inspect.
 MAX_MESSAGES = int(os.getenv("MAX_MESSAGES", "0"))
-TARGET_MESSAGE_ID = os.getenv("MESSAGE_ID", os.getenv("TARGET_MESSAGE_ID", "")).strip()
 
 required = [
     FROM_QUEUE,
@@ -40,68 +39,111 @@ if FROM_QUEUE == TO_QUEUE:
 # -- END VALIDATION
 
 
-def matches_target_id(properties, body, target_id):
+def load_target_ids():
     """
-    Check if target_id matches AMQP properties, headers, or any field
-    in nested JSON payload (e.g. payload.payload.id).
+    Load target IDs from:
+      1. MESSAGE_IDS or TARGET_MESSAGE_ID or MESSAGE_ID (comma or space separated)
+      2. MESSAGE_IDS_FILE (text file path, one ID per line)
+      3. A file path provided directly in MESSAGE_ID
+    Returns a set of ID strings.
     """
-    if not target_id:
-        return False
-    target_id = str(target_id).strip()
+    raw_input = os.getenv("MESSAGE_IDS") or os.getenv("TARGET_MESSAGE_ID") or os.getenv("MESSAGE_ID") or ""
+    ids_file = os.getenv("MESSAGE_IDS_FILE") or ""
+
+    if raw_input and os.path.isfile(raw_input):
+        ids_file = raw_input
+        raw_input = ""
+
+    target_ids = set()
+
+    if ids_file:
+        if not os.path.isfile(ids_file):
+            raise FileNotFoundError(f"MESSAGE_IDS_FILE not found: {ids_file}")
+        with open(ids_file, "r", encoding="utf-8") as f:
+            for line in f:
+                cleaned = line.strip()
+                if cleaned and not cleaned.startswith("#"):
+                    target_ids.add(cleaned)
+
+    if raw_input:
+        for item in raw_input.replace(",", " ").split():
+            cleaned = item.strip().strip("'\"")
+            if cleaned:
+                target_ids.add(cleaned)
+
+    return target_ids
+
+
+def find_matching_target_id(properties, body, target_ids):
+    """
+    Check if the message matches any ID in target_ids.
+    Returns the matched ID string, or None.
+    Supports AMQP message_id, correlation_id, headers, and nested JSON payload (e.g. payload.payload.id).
+    """
+    if not target_ids:
+        return None
 
     # 1. Standard AMQP properties
-    if properties.message_id and str(properties.message_id).strip() == target_id:
-        return True
-    if properties.correlation_id and str(properties.correlation_id).strip() == target_id:
-        return True
+    if properties.message_id and str(properties.message_id).strip() in target_ids:
+        return str(properties.message_id).strip()
+    if properties.correlation_id and str(properties.correlation_id).strip() in target_ids:
+        return str(properties.correlation_id).strip()
 
     # 2. AMQP headers (recursively check dicts/lists)
     if properties.headers:
         def check_headers(obj):
             if isinstance(obj, dict):
-                for k, v in obj.items():
+                for v in obj.values():
                     val = str(v.decode() if isinstance(v, bytes) else v).strip()
-                    if val == target_id:
-                        return True
-                    if check_headers(v):
-                        return True
+                    if val in target_ids:
+                        return val
+                    res = check_headers(v)
+                    if res is not None:
+                        return res
             elif isinstance(obj, list):
                 for item in obj:
-                    if check_headers(item):
-                        return True
-            return False
+                    res = check_headers(item)
+                    if res is not None:
+                        return res
+            return None
 
-        if check_headers(properties.headers):
-            return True
+        matched = check_headers(properties.headers)
+        if matched is not None:
+            return matched
 
     # 3. JSON body (recursively searches nested dicts, lists, and values)
     try:
         data = json.loads(body)
         def check_json(obj):
             if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if isinstance(v, (str, int)) and str(v).strip() == target_id:
-                        return True
-                    if check_json(v):
-                        return True
+                for v in obj.values():
+                    if isinstance(v, (str, int)) and str(v).strip() in target_ids:
+                        return str(v).strip()
+                    res = check_json(v)
+                    if res is not None:
+                        return res
             elif isinstance(obj, list):
                 for item in obj:
-                    if check_json(item):
-                        return True
-            return False
+                    res = check_json(item)
+                    if res is not None:
+                        return res
+            return None
 
-        if check_json(data):
-            return True
+        matched = check_json(data)
+        if matched is not None:
+            return matched
     except Exception:
         # 4. Fallback: raw body string containment if not valid JSON
         if isinstance(body, (bytes, bytearray)):
             try:
-                if target_id in body.decode("utf-8", errors="ignore"):
-                    return True
+                body_str = body.decode("utf-8", errors="ignore")
+                for tid in target_ids:
+                    if tid in body_str:
+                        return tid
             except Exception:
                 pass
 
-    return False
+    return None
 
 
 credentials = pika.PlainCredentials(USERNAME, PASSWORD)
@@ -131,17 +173,20 @@ try:
     channel.queue_declare(queue=FROM_QUEUE, passive=True)
     channel.queue_declare(queue=TO_QUEUE, passive=True)
 
+    TARGET_IDS = load_target_ids()
+
     # -------------------------------------------------------------------------
-    # MODE 1: Move specific message by ID (without altering other messages' order)
+    # MODE 1: Move specific list of message IDs (preserving relative order)
     # -------------------------------------------------------------------------
-    if TARGET_MESSAGE_ID:
-        print(f"Targeted mode: Looking for message ID [{TARGET_MESSAGE_ID}] in [{FROM_QUEUE}]...")
-        found = False
+    if TARGET_IDS:
+        print(f"Targeted mode: Looking for {len(TARGET_IDS)} target message ID(s) in [{FROM_QUEUE}]...")
+        remaining_targets = set(TARGET_IDS)
+        moved_ids = []
         inspected_count = 0
 
-        while True:
+        while remaining_targets:
             if 0 < MAX_MESSAGES <= inspected_count:
-                print(f"Reached inspection limit of {MAX_MESSAGES} messages without finding target ID.")
+                print(f"Reached inspection limit of {MAX_MESSAGES} messages.")
                 break
 
             # Fetch message without auto-ack to hold position
@@ -150,9 +195,9 @@ try:
                 break
 
             inspected_count += 1
+            matched_id = find_matching_target_id(properties, body, remaining_targets)
 
-            if matches_target_id(properties, body, TARGET_MESSAGE_ID):
-                print(f"[+] Found target message (inspected {inspected_count} messages). Moving to [{TO_QUEUE}]...")
+            if matched_id:
                 try:
                     # Publish with publisher confirms and mandatory routing
                     channel.basic_publish(
@@ -163,18 +208,18 @@ try:
                         mandatory=True,
                     )
                     channel.basic_ack(method.delivery_tag)
-                    found = True
-                    print(f"[✓] Successfully moved message [{TARGET_MESSAGE_ID}] to [{TO_QUEUE}].")
+                    moved_ids.append(matched_id)
+                    remaining_targets.remove(matched_id)
+                    print(f"[+] ({len(moved_ids)}/{len(TARGET_IDS)}) Moved message [{matched_id}] to [{TO_QUEUE}]")
                 except Exception as exc:
-                    print(f"Publish failed for message [{TARGET_MESSAGE_ID}]: {exc}")
+                    print(f"Publish failed for message [{matched_id}]: {exc}")
                     unacked_tags.append(method.delivery_tag)
                     raise
-                break
             else:
                 # Keep unacked so RabbitMQ serves the next message behind it
                 unacked_tags.append(method.delivery_tag)
 
-        # Requeue all preceding/inspected messages.
+        # Requeue all non-matching inspected messages.
         # In RabbitMQ, requeued messages return to the head in their relative original order.
         if unacked_tags:
             print(f"Requeuing {len(unacked_tags)} inspected message(s) back to [{FROM_QUEUE}] in original order...")
@@ -186,9 +231,12 @@ try:
                     pass
             unacked_tags.clear()
 
-        if not found:
-            print(f"[-] Message with ID [{TARGET_MESSAGE_ID}] not found in [{FROM_QUEUE}]. "
-                  f"All {inspected_count} inspected message(s) remain untouched in original order.")
+        if remaining_targets:
+            print(f"[!] {len(remaining_targets)} of {len(TARGET_IDS)} target ID(s) were NOT found in [{FROM_QUEUE}]:")
+            for tid in sorted(remaining_targets):
+                print(f"    - {tid}")
+
+        print(f"[✓] Finished targeted move: {len(moved_ids)}/{len(TARGET_IDS)} moved successfully.")
 
     # -------------------------------------------------------------------------
     # MODE 2: Move all messages (or up to MAX_MESSAGES) in FIFO order
