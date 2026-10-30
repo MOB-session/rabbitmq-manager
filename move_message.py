@@ -4,8 +4,8 @@ import pika
 #local test
 ENV = os.getenv("ENV", "dev")
 LOCATION = os.getenv("LOCATION", "bra")
-FROM_QUEUE = os.getenv("FROM", "queue1-deadletter")
-TO_QUEUE = os.getenv("TO", "queue1-events")
+FROM_QUEUE = os.getenv("FROM", "queue1-events")
+TO_QUEUE = os.getenv("TO", "queue1-deadletter")
 USERNAME = os.getenv("RABBITMQ_USER", "rabbitmq")
 PASSWORD = os.getenv("RABBITMQ_PASSWORD", "rabbitmq")
 VHOST = os.getenv("VHOST", "/fish")
@@ -28,7 +28,7 @@ if ENV not in VALID_ENVS:
         f"Invalid ENV [{ENV}]. Allowed values: {VALID_ENVS}"
     )
 
-RABBITMQ_HOST = ("rabbitmq.middleware")
+RABBITMQ_HOST = ("localhost")
 RABBITMQ_PORT = 5672
 
 credentials = pika.PlainCredentials(USERNAME, PASSWORD)
