@@ -60,8 +60,8 @@ else
       --restart unless-stopped \
       -p 5672:5672 \
       -p 15672:15672 \
-      -e RABBITMQ_DEFAULT_USER=guest \
-      -e RABBITMQ_DEFAULT_PASS=guest \
+      -e RABBITMQ_DEFAULT_USER=rabbitmq \
+      -e RABBITMQ_DEFAULT_PASS=rabbitmq \
       -e RABBITMQ_DEFAULT_VHOST=/ \
       -v "$DIR/enabled_plugins":/etc/rabbitmq/enabled_plugins:ro \
       -v "$DIR/rabbitmq.conf":/etc/rabbitmq/rabbitmq.conf:ro \
@@ -72,7 +72,7 @@ echo ""
 echo "[✓] RabbitMQ 4.1.0 is starting!"
 echo "    - AMQP Broker Port:       localhost:5672"
 echo "    - Management Web UI:      http://localhost:15672"
-echo "    - Credentials:            guest / guest"
+echo "    - Credentials:            rabbitmq / rabbitmq"
 echo ""
 echo "To check logs: $DOCKER_CMD logs -f rabbitmq-server"
 echo "To stop:       bash rabbitmq/stop.sh"

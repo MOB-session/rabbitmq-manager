@@ -8,8 +8,8 @@ services:
       - "5672:5672"     # AMQP 0-9-1 & 1.0 protocol
       - "15672:15672"   # Management HTTP API & Web Dashboard
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
+      - RABBITMQ_DEFAULT_USER=rabbitmq
+      - RABBITMQ_DEFAULT_PASS=rabbitmq
       - RABBITMQ_DEFAULT_VHOST=/fish
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq

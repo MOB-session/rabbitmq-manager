@@ -35,8 +35,8 @@ docker compose up -d
 ### Access Points:
 - **AMQP Broker Port:** `localhost:5672` (used by backend & seed script)
 - **Management Web UI:** [http://localhost:15672](http://localhost:15672)
-- **Default Username:** `guest`
-- **Default Password:** `guest`
+- **Default Username:** `rabbitmq`
+- **Default Password:** `rabbitmq`
 
 ---
 
