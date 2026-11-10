@@ -1,0 +1,14 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.idea/
+.vscode/
+charts/
+rabbitmq/
+scripts/
+test.py
+*.log
+.DS_Store
